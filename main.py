@@ -3,125 +3,79 @@ import threading
 import asyncio
 from flask import Flask
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 
+# إعداد سيرفر الويب ليتوافق مع متطلبات منصة Render
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running!"
+    return "Telegram UserBot is active and running!"
 
-def run_flask():
+def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-api_id = 36835218
-api_hash = '61b5955b5646397e808a5336e3c59359'
+# إعدادات التيليجرام وبيانات الاعتماد
+api_id = int(os.environ.get("API_ID", 36835218))
+api_hash = os.environ.get("API_HASH", "61b5955b5646397e808a5336e3c59359")
+session_string = os.environ.get("SESSION_STRING")
 
-client = TelegramClient('bot_session', api_id, api_hash)
+SOURCE_CHAT_ID = -1002790633978
+TARGET_CHAT = "@Twinssolo"
+SUPERVISORS = "@GZ232 @i4Y0U"
 
-SOURCE_CHATS = [-1002790633978]  # القروب المصدر
-TARGET_CHAT = '@Twinssolo'       # القناة المستهدفة
+client = TelegramClient(StringSession(session_string), api_id, api_hash)
 
-active_accounts = {}
-message_mapping = {}
+# سجل لمنع تكرار معالجة الرسائل (Deduplication)
+processed_messages = set()
 
-def get_account_key(text):
-    if not text:
-        return None
-    lines = text.strip().split('\n')
-    return lines[0].strip() if lines else text
-
-async def process_and_send(message):
+async def process_and_forward(message):
+    if not message.text:
+        return
+    
+    # التحقق من عدم معالجة الرسالة مسبقاً
+    if message.id in processed_messages:
+        return
+    processed_messages.add(message.id)
+    
+    text = message.text
+    
+    # إضافة التوقيعات إذا لم تكن موجودة مسبقاً في النص
+    if "@GZ232" not in text and "@i4Y0U" not in text:
+        text = f"{text}\n\n{SUPERVISORS}"
+        
     try:
-        text = message.text or message.caption or ""
-        if not text:
-            return
-        
-        account_key = get_account_key(text)
-        
-        if account_key and account_key in active_accounts:
-            old_target_msg_id = active_accounts[account_key]
-            try:
-                await client.delete_messages(TARGET_CHAT, old_target_msg_id)
-            except Exception:
-                pass
-        
-        supervisors_footer = "\n\nالمشرفين:\n@GZ232\n@i4Y0U"
-        full_text = text + supervisors_footer
-
-        if message.media:
-            sent_msg = await client.send_file(TARGET_CHAT, message.media, caption=full_text)
-        else:
-            sent_msg = await client.send_message(TARGET_CHAT, full_text)
-        
-        if account_key:
-            active_accounts[account_key] = sent_msg.id
-        message_mapping[message.id] = sent_msg.id
+        await client.send_message(TARGET_CHAT, text)
     except Exception as e:
-        print(f"Error processing message: {e}")
+        print(f"Error forwarding message: {e}")
 
-# مهمة دورية تعمل كل ساعة لفحص وسحب آخر 30 رسالة بأمان
-async def hourly_sync_task():
-    while True:
-        try:
-            print("Running hourly sync for the last 30 messages...")
-            async for message in client.iter_messages(SOURCE_CHATS[0], limit=30):
-                await process_and_send(message)
-                # توقف قصير جداً بين كل رسالة والثانية لحماية الحساب من السبام
-                await asyncio.sleep(1)
-            print("Hourly sync completed successfully.")
-        except Exception as e:
-            print(f"Error in hourly sync: {e}")
-        
-        # الانتظار لمدة ساعة كاملة (3600 ثانية) قبل المرة القادمة
-        await asyncio.sleep(3600)
+# استقبال وتوجيه الرسائل الجديدة في الوقت الفعلي
+@client.on(events.NewMessage(chats=SOURCE_CHAT_ID))
+async def handler(event):
+    await process_and_per_message = await process_and_forward(event.message)
 
-@client.on(events.NewMessage(chats=SOURCE_CHATS))
-async def new_message_handler(event):
-    await process_and_send(event.message)
-    print("New message processed and forwarded instantly!")
-
-@client.on(events.MessageEdited(chats=SOURCE_CHATS))
-async def edited_message_handler(event):
+async def sync_recent_messages():
     try:
-        if event.message.id in message_mapping:
-            target_msg_id = message_mapping[event.message.id]
-            new_text = event.message.text or event.message.caption or ""
-            
-            supervisors_footer = "\n\nالمشرفين:\n@GZ232\n@i4Y0U"
-            updated_text = f"تم تخفيض الحد ⬇️\n\n{new_text}{supervisors_footer}"
-            
-            await client.edit_message(TARGET_CHAT, target_msg_id, updated_text)
-            print("Message updated with new price and supervisors!")
+        # جلب ومعالجة آخر 30 رسالة عند بدء التشغيل لضمان مزامنة حالة القناة
+        async for message in client.iter_messages(SOURCE_CHAT_ID, limit=30):
+            await process_and_forward(message)
     except Exception as e:
-        print(f"Error in editing: {e}")
+        print(f"Error in sync task: {e}")
 
-@client.on(events.MessageDeleted())
-async def deleted_message_handler(event):
-    try:
-        for deleted_id in event.deleted_ids:
-            if deleted_id in message_mapping:
-                target_msg_id = message_mapping[deleted_id]
-                await client.delete_messages(TARGET_CHAT, target_msg_id)
-                del message_mapping[deleted_id]
-                print("Message deleted from channel!")
-    except Exception as e:
-        print(f"Error in deleting: {e}")
-
-async def main_bot_tasks():
-    # تشغيل المهمة الدورية في الخلفية
-    asyncio.create_task(hourly_sync_task())
-
-    print("Telegram Bot is running and listening for real-time messages...")
+async def main_bot():
+    await client.start()
+    print("UserBot started and connected successfully!")
+    
+    # تنفيذ مزامنة آخر 30 رسالة
+    await sync_recent_messages()
+    
     await client.run_until_disconnected()
 
-def start_telegram_bot():
-    client.start()
-    client.loop.run_until_complete(main_bot_tasks())
-
 if __name__ == '__main__':
-    t = threading.Thread(target=start_telegram_bot)
-    t.daemon = True
-    t.start()
-    run_flask()
+    # تشغيل سيرفر الويب في خلفية النظام
+    web_thread = threading.Thread(target=run_web)
+    web_thread.start()
     
+    # تشغيل حلقة أحداث بوت التليجرام
+    asyncio.run(main_bot())
