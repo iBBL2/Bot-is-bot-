@@ -53,7 +53,8 @@ async def process_and_forward(message):
 # استقبال وتوجيه الرسائل الجديدة في الوقت الفعلي
 @client.on(events.NewMessage(chats=SOURCE_CHAT_ID))
 async def handler(event):
-    await process_and_per_message = await process_and_forward(event.message)
+    await process_and_forward(event.message)
+
 
 async def sync_recent_messages():
     try:
