@@ -1,5 +1,6 @@
 import os
 import threading
+import asyncio
 from flask import Flask
 from telethon import TelegramClient, events
 
@@ -21,7 +22,6 @@ client = TelegramClient('bot_session', api_id, api_hash)
 SOURCE_CHATS = [-1002790633978]  # القروب المصدر
 TARGET_CHAT = '@Twinssolo'       # القناة المستهدفة
 
-# تخزين الحسابات النشطة لمعرفة التكرار وحذف القديم
 active_accounts = {}
 message_mapping = {}
 
@@ -31,39 +31,55 @@ def get_account_key(text):
     lines = text.strip().split('\n')
     return lines[0].strip() if lines else text
 
-@client.on(events.NewMessage(chats=SOURCE_CHATS))
-async def new_message_handler(event):
+async def process_and_send(message):
     try:
-        text = event.message.text or event.message.caption or ""
+        text = message.text or message.caption or ""
+        if not text:
+            return
+        
         account_key = get_account_key(text)
         
-        # إذا تكرر نشر نفس الحساب، احذف رسالته القديمة من القناة أولاً
         if account_key and account_key in active_accounts:
             old_target_msg_id = active_accounts[account_key]
             try:
                 await client.delete_messages(TARGET_CHAT, old_target_msg_id)
-                print("Old duplicate account message deleted from channel.")
-            except Exception as e:
-                print(f"Could not delete old message: {e}")
+            except Exception:
+                pass
         
-        # إضافة يوزرات المشرفين في نهاية الرسالة
         supervisors_footer = "\n\nالمشرفين:\n@GZ232\n@i4Y0U"
         full_text = text + supervisors_footer
 
-        # إرسال الرسالة (مع الوسائط إن وجدت أو نص فقط)
-        if event.message.media:
-            sent_msg = await client.send_file(TARGET_CHAT, event.message.media, caption=full_text)
+        if message.media:
+            sent_msg = await client.send_file(TARGET_CHAT, message.media, caption=full_text)
         else:
             sent_msg = await client.send_message(TARGET_CHAT, full_text)
         
-        # تحديث السجلات
         if account_key:
             active_accounts[account_key] = sent_msg.id
-        message_mapping[event.message.id] = sent_msg.id
-        
-        print("New message sent with supervisors successfully!")
+        message_mapping[message.id] = sent_msg.id
     except Exception as e:
-        print(f"Error in sending message: {e}")
+        print(f"Error processing message: {e}")
+
+# مهمة دورية تعمل كل ساعة لفحص وسحب آخر 30 رسالة بأمان
+async def hourly_sync_task():
+    while True:
+        try:
+            print("Running hourly sync for the last 30 messages...")
+            async for message in client.iter_messages(SOURCE_CHATS[0], limit=30):
+                await process_and_send(message)
+                # توقف قصير جداً بين كل رسالة والثانية لحماية الحساب من السبام
+                await asyncio.sleep(1)
+            print("Hourly sync completed successfully.")
+        except Exception as e:
+            print(f"Error in hourly sync: {e}")
+        
+        # الانتظار لمدة ساعة كاملة (3600 ثانية) قبل المرة القادمة
+        await asyncio.sleep(3600)
+
+@client.on(events.NewMessage(chats=SOURCE_CHATS))
+async def new_message_handler(event):
+    await process_and_send(event.message)
+    print("New message processed and forwarded instantly!")
 
 @client.on(events.MessageEdited(chats=SOURCE_CHATS))
 async def edited_message_handler(event):
@@ -92,10 +108,16 @@ async def deleted_message_handler(event):
     except Exception as e:
         print(f"Error in deleting: {e}")
 
+async def main_bot_tasks():
+    # تشغيل المهمة الدورية في الخلفية
+    asyncio.create_task(hourly_sync_task())
+
+    print("Telegram Bot is running and listening for real-time messages...")
+    await client.run_until_disconnected()
+
 def start_telegram_bot():
-    print("Telegram Bot is running...")
     client.start()
-    client.run_until_disconnected()
+    client.loop.run_until_complete(main_bot_tasks())
 
 if __name__ == '__main__':
     t = threading.Thread(target=start_telegram_bot)
