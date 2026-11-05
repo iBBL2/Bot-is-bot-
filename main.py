@@ -55,10 +55,9 @@ async def process_and_forward(message):
 async def handler(event):
     await process_and_forward(event.message)
 
-
 async def sync_recent_messages():
     try:
-        # جلب ومعالجة آخر 30 رسالة عند بدء التشغيل لضمان مزامنة حالة القناة
+        # جلب ومعالجة آخر 30 رسالة عند بدء التشغيل لضمان مزامنة الحالة
         async for message in client.iter_messages(SOURCE_CHAT_ID, limit=30):
             await process_and_forward(message)
     except Exception as e:
